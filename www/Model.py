@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import asyncio
-import logging; logging.basicConfig(level=logging.INFO)
-import aiomysql
+
+from www.orm import Model, IntegerField, StringField
 
 __author__ = 'Erian Liang'
 
 '''
-Base class of models
+User Model
 '''
 
-class Model(dict, metaclass=ModelMetaclass):
+
+class User(Model):
+    __table__ = 'users'
+
+    id = IntegerField(primary_key=True)
+    name = StringField()
