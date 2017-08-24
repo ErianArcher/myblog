@@ -33,6 +33,7 @@ def create_pool(loop, **kw):
         loop=loop
     )
 
+
 @asyncio.coroutine
 def select(sql, args, size=None):
     log(sql, args)
@@ -48,18 +49,28 @@ def select(sql, args, size=None):
         logging.info('rows returned: %s' % len(rs))
         return rs
 
+
 @asyncio.coroutine
-def execute(sql, args):
+def execute(sql, args, autocommit=True):
     log(sql)
     with(yield from __pool) as conn:
         try:
-            cur = yield from conn.cursor()
+            cur = yield from conn.cursor(aiomysql.DictCursor)
             yield from cur.execute(sql.replace('?', '%s'), args)
             affected = cur.rowcount
+            if not autocommit:
+                yield from conn.commit()
             yield from cur.close()
         except BaseException as e:
+            if not autocommit:
+                yield from conn.rollback()
             raise
         return affected
+
+
+'''
+Model superclasses
+'''
 
 
 def create_args_string(length):
@@ -167,27 +178,62 @@ class Model(dict, metaclass=ModelMetaclass):
 
     @classmethod
     @asyncio.coroutine
-    def findAll(cls):
+    def findAll(cls, where=None, args=None, **kw):
         """
-        find all
+        find all class in database
+        :param where: default None
+        :param args: default None
+        :param kw: other keyword like 'order by' with key 'orderBy' and 'limit' with key 'limit'
         :return: a list of all object of the class
         """
-        rs = yield from select('SELECT * FROM %s', [cls.__table__])
+        sql = [cls.__select__]
+        if where:
+            sql.append('where')
+            sql.append(where)
+
+        if args is None:
+            args = []
+
+        orderBy = kw.get('orderBy', None)
+        if orderBy:
+            sql.append('order by')
+            sql.append(orderBy)
+
+        limit = kw.get('limit', None)
+        if limit is not None:
+            sql.append('limit')
+            if isinstance(limit, int):
+                sql.append('?')
+                sql.append(limit)
+            elif isinstance(limit, tuple) and len(limit) == 2:
+                sql.append('?, ?')
+                args.extend(limit)
+            else:
+                raise ValueError('Invalid limit value: %s' % str(limit))
+
+        rs = yield from select(' '.join(sql), args)
         if len(rs) == 0:
             return None
         return [cls(**r) for r in rs]
 
     @classmethod
     @asyncio.coroutine
-    def findNumber(cls):
+    def findNumber(cls, selectField='id', where=None, args=None):
         """
         count the number of records in database
+        :param selectField is the fields that are needed to be counted
+        :param where default None
+        :param args default None
         :return: number
         """
-        rs = yield from execute('SELECT count(*) FROM %s', [cls.__table__])
+        sql = ['SELECT %s _num_ FROM `%s`' % (selectField, cls.__table__)]
+        if where:
+            sql.append('where')
+            sql.append(where)
+        rs = yield from select(' '.join(sql), args)
         if len(rs) == 0:
             return None
-        return rs[0]
+        return len(rs) #row count
 
     @asyncio.coroutine
     def save(self):
@@ -211,6 +257,11 @@ class Model(dict, metaclass=ModelMetaclass):
         rows = yield from execute(self.__delete__, args)
         if rows != 1:
             logging.warn('Failed to remove record: affected rows: %s' % rows)
+
+
+'''
+Fields
+'''
 
 
 class Field(object):
@@ -249,3 +300,30 @@ class StringField(Field):
 
     def __init__(self, name=None, primary_key=False, default=None, ddl='varchar(100)'):
         super().__init__(name, ddl, primary_key, default)
+
+
+class BooleanField(Field):
+
+    """
+    Field class for boolean field
+    ddl = boolean
+    """
+
+    def __init__(self, name=None, default=False):
+        super().__init__(name, 'boolean', False, default)
+
+
+class FloatField(Field):
+
+    """
+    Field class for float field
+    ddl = real
+    """
+
+    def __init__(self, name=None, primary_key=False, default=0.0):
+        super().__init__(name, 'real', primary_key, default)
+
+
+class TextField(Field):
+    def __init__(self, name=None, default=None):
+        super().__init__(name, 'text', False, default)
